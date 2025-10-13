@@ -63,6 +63,7 @@ import javax.xml.xpath.XPathExpressionException;
 import javax.xml.xpath.XPathFactory;
 import org.l2x6.pom.tuner.model.Ga;
 import org.l2x6.pom.tuner.model.Gavtcs;
+import org.l2x6.pom.tuner.transform.modules;
 import org.w3c.dom.Comment;
 import org.w3c.dom.DOMException;
 import org.w3c.dom.Document;
@@ -90,9 +91,11 @@ public class PomTransformer {
             Pattern.compile("(\\s*)<project([^>]*)>")
     };
     static final Pattern EOL_PATTERN = Pattern.compile("\r?\n");
-    static final Pattern WS_PATTERN = Pattern.compile("[ \t\n\r]+");
+    static final String WS_REGEX = "[ \t\n\r]+";
+    static final Pattern WS_PATTERN = Pattern.compile(WS_REGEX);
     static final Pattern INDENT_PATTERN = Pattern.compile("(\r?\n)([ \t]+)");
-    static final Pattern EMPTY_LINE_PATTERN = Pattern.compile("[ \t]*\r?\n\r?\n[ \t\r\n]*");
+    static final String EMPTY_LINE_REGEX = "[ \t]*\r?\n\r?\n[ \t\r\n]*";
+    static final Pattern EMPTY_LINE_PATTERN = Pattern.compile(EMPTY_LINE_REGEX);
     static final Pattern SIMPLE_ELEM_WS_PATTERN = Pattern.compile("<([^ \t\n\r]+)([ \t\n\r]*)/>");
     private static final String MODULE_COMMENT_PREFIX = " <module>";
     private static final String MODULE_COMMENT_INFIX = "</module> ";
@@ -113,6 +116,8 @@ public class PomTransformer {
      * issues caused by {@link Transformer} and finally stores the document back to the file under {@link #path}.
      *
      * @param transformations the {@link Transformation}s to apply
+     *
+     * @deprecated use {@link #transform(Transformer...)}
      */
     public void transform(Transformation... transformations) {
         transform(Arrays.asList(transformations));
@@ -124,13 +129,23 @@ public class PomTransformer {
      *
      * @param transformations the {@link Transformation}s to apply
      */
-    public void transform(Collection<Transformation> transformations) {
+    public void transform(Transformer... transformations) {
+        transform(Arrays.asList(transformations));
+    }
+
+    /**
+     * Loads the document under {@link #path}, applies the given {@code transformations}, mitigates the formatting
+     * issues caused by {@link Transformer} and finally stores the document back to the file under {@link #path}.
+     *
+     * @param transformations the {@link Transformation}s to apply
+     */
+    public void transform(Collection<Transformer> transformations) {
         LazyWriter lazyWriter = new LazyWriter(path, charset);
         transform(transformations, simpleElementWhitespace, path, lazyWriter::read, lazyWriter::write);
     }
 
     static void transform(
-            Collection<Transformation> edits,
+            Collection<Transformer> edits,
             SimpleElementWhitespace simpleElementWhitespace,
             Path path,
             Supplier<String> source,
@@ -150,8 +165,8 @@ public class PomTransformer {
         final XPath xPath = XPathFactory.newInstance().newXPath();
         final TransformationContext context = new TransformationContext(path, document,
                 detectIndentation(document, xPath), xPath);
-        for (Transformation edit : edits) {
-            edit.perform(document, context);
+        for (Transformer edit : edits) {
+            edit.perform(context);
         }
         String result;
         try {
@@ -376,6 +391,17 @@ public class PomTransformer {
                     return currentNode;
                 }
                 currentNode = next;
+            }
+        }
+
+        public void remove(Function<Node, List<Node>> siblingsSelector) {
+            Node parent = node.getParentNode();
+            if (parent != null) {
+                final List<Node> siblings = siblingsSelector.apply(node);
+                if (siblings != null && !siblings.isEmpty()) {
+                    siblings.forEach(parent::removeChild);
+                }
+                parent.removeChild(node);
             }
         }
 
@@ -729,26 +755,29 @@ public class PomTransformer {
 
         public TextElement addChildTextElementIfNeeded(String nodeName, String nodeValue,
                 Comparator<Entry<String, String>> comparator) {
-            Entry<String, String> newEntry = new AbstractMap.SimpleImmutableEntry<>(nodeName, nodeValue);
             Node refNode = null;
-            for (TextElement child : childTextElements()) {
-                final Element node = child.getNode();
-                int comparison = comparator.compare(newEntry, new AbstractMap.SimpleImmutableEntry<>(
-                        node.getNodeName(), node.getTextContent()));
-                if (comparison == 0) {
-                    /* the given child is available, no need to add it */
-                    if (!Objects.equals(node.getTextContent(), nodeValue)) {
-                        node.setTextContent(nodeValue);
-                    }
-                    return child;
-                }
-                if (refNode == null && comparison < 0) {
-                    refNode = child.previousSiblingInsertionRefNode();
-                }
-            }
-
-            if (refNode == null) {
+            if (comparator == null) {
                 refNode = getOrAddLastIndent();
+            } else {
+                Entry<String, String> newEntry = new AbstractMap.SimpleImmutableEntry<>(nodeName, nodeValue);
+                for (TextElement child : childTextElements()) {
+                    final Element node = child.getNode();
+                    int comparison = comparator.compare(newEntry, new AbstractMap.SimpleImmutableEntry<>(
+                            node.getNodeName(), node.getTextContent()));
+                    if (comparison == 0) {
+                        /* the given child is available, no need to add it */
+                        if (!Objects.equals(node.getTextContent(), nodeValue)) {
+                            node.setTextContent(nodeValue);
+                        }
+                        return child;
+                    }
+                    if (refNode == null && comparison < 0) {
+                        refNode = child.previousSiblingInsertionRefNode();
+                    }
+                }
+                if (refNode == null) {
+                    refNode = getOrAddLastIndent();
+                }
             }
             return addChildTextElement(nodeName, nodeValue, refNode);
         }
@@ -1199,12 +1228,20 @@ public class PomTransformer {
                     emptyLineAfter);
         }
 
+        /**
+         * @param node the {@link Node} to decide about
+         * @return {@code true} if the given {@code node} is a text node and its text matches {@value PomTransformer#EMPTY_LINE_REGEX} or {@code false} otherwise
+         */
         public static boolean isEmptyLineNode(Node node) {
             return node.getNodeType() == Node.TEXT_NODE
                     && node.getTextContent() != null
                     && EMPTY_LINE_PATTERN.matcher(node.getTextContent()).matches();
         }
 
+        /**
+         * @param node the {@link Node} to decide about
+         * @return {@code true} if the given {@code node} is a text node and its text matches {@value PomTransformer#WS_REGEX} or {@code false} otherwise
+         */
         public static boolean isWhiteSpaceNode(Node node) {
             return node.getNodeType() == Node.TEXT_NODE
                     && node.getTextContent() != null
@@ -1283,7 +1320,12 @@ public class PomTransformer {
             }
         }
 
+        /**
+         * @param profileId the {@code id} of the profile to look up
+         * @return an {@link Optional} containing a {@link ContainerElement} pointing at the {@code <profile>} element of the given profile or an empty {@link Optional} if no such profile exists
+         */
         public Optional<ContainerElement> getProfile(String profileId) {
+            Objects.requireNonNull(profileId, "profileId");
             try {
                 final Node node = (Node) xPath.evaluate(
                         PomTunerUtils.anyNs("project", "profiles", "profile") + "[." + PomTunerUtils.anyNs("id") + "/text() = '"
@@ -1298,7 +1340,21 @@ public class PomTransformer {
             }
         }
 
+        public List<ContainerElement> getProfiles() {
+            final List<ContainerElement> result = new ArrayList<>();
+            getContainerElement("project").ifPresent(result::add);
+            getContainerElement("profiles").ifPresent(profiles -> {
+                profiles.childElementsStream().forEach(result::add);
+            });
+            return Collections.unmodifiableList(result);
+        }
+
+        /**
+         * @param profileId the {@code id} of the profile to look up or create
+         * @return a {@link ContainerElement} pointing at a new or existing {@code <profile>} element having {@code <id>} equal to the given code {@code id}
+         */
         public ContainerElement getOrAddProfile(String profileId) {
+            Objects.requireNonNull(profileId, "profileId");
             try {
                 final Node node = (Node) xPath.evaluate(
                         PomTunerUtils.anyNs("project", "profiles", "profile") + "[." + PomTunerUtils.anyNs("id") + "/text() = '"
@@ -1316,6 +1372,10 @@ public class PomTransformer {
             }
         }
 
+        /**
+         * @param profileId the {@code id} of the profile to look up; pass {@code null} to return the {@code <project>} element
+         * @return an Optional containing the {@code <project>} element if the {@code profileId} is {@code null} or otherwise delegate to {@link #getProfile(String)}
+         */
         public Optional<ContainerElement> getProfileParent(String profileId) {
             if (profileId == null) {
                 final Node node = document.getDocumentElement();
@@ -1328,6 +1388,10 @@ public class PomTransformer {
             }
         }
 
+        /**
+         * @param profileId the {@code id} of the profile to look up; pass {@code null} to return the {@code <project>} element
+         * @return a {@link ContainerElement} pointing at the {@code <project>} element if the {@code profileId} is {@code null} or otherwise delegates to {@link #getOrAddProfile(String)}
+         */
         public ContainerElement getOrAddProfileParent(String profileId) {
             if (profileId == null) {
                 final Node node = document.getDocumentElement();
@@ -1364,6 +1428,13 @@ public class PomTransformer {
             }
         }
 
+        /**
+         * Returns a {@link LinkedHashSet} of dependencies under {@code project/dependencies} node.
+         * The elements a backed by the nodes of the {@link Document} of this {@link TransformationContext},
+         * so any edits on those will get effective upon storing the {@link Document} back to {@link #pomXmlPath}.
+         *
+         * @return a {@link LinkedHashSet} of dependencies under the {@code <project>}
+         */
         public Set<NodeGavtcs> getDependencies() {
             return getContainerElement("project", "dependencies")
                     .map(deps -> deps.childElementsStream()
@@ -1372,6 +1443,13 @@ public class PomTransformer {
                     .orElse(Collections.emptySet());
         }
 
+        /**
+         * Returns a {@link LinkedHashSet} of dependencies under {@code project/dependencyManagement/dependencies} node.
+         * The elements a backed by the nodes of the {@link Document} of this {@link TransformationContext},
+         * so any edits on those will get effective upon storing the {@link Document} back to {@link #pomXmlPath}.
+         *
+         * @return a {@link LinkedHashSet} of dependencies under the {@code <project>}
+         */
         public Set<NodeGavtcs> getManagedDependencies() {
             return getContainerElement("project", "dependencyManagement", "dependencies")
                     .map(deps -> deps.childElementsStream()
@@ -1380,6 +1458,10 @@ public class PomTransformer {
                     .orElse(Collections.emptySet());
         }
 
+        /**
+         * @param gavtcs the {@link Gavtcs} to find
+         * @return an optional containing the dependency node matching the given {@code gavtcs} or an empty {@link Optional} if no such dependency exists
+         */
         public Optional<ContainerElement> findDependency(Gavtcs gavtcs) {
             return getContainerElement("project", "dependencies")
                     .map(depsNode -> depsNode.childElementsStream()
@@ -1388,6 +1470,13 @@ public class PomTransformer {
                             .orElse(null));
         }
 
+        /**
+         * Removes the given dependency if it exists; otherwise does nothing.
+         *
+         * @param removedDependency the dependency to remove
+         * @param removePrecedingComments if {@code true} any preceding comments will be removed
+         * @param removePrecedingWhitespace if {@code true} any preceding whitespace will be removed
+         */
         public void removeDependency(Gavtcs removedDependency, boolean removePrecedingComments,
                 boolean removePrecedingWhitespace) {
             getContainerElement("project", "dependencies")
@@ -1398,6 +1487,13 @@ public class PomTransformer {
                                     removePrecedingWhitespace)));
         }
 
+        /**
+         * Removes the given managed dependency if it exists; otherwise does nothing.
+         *
+         * @param removedDependency the dependency to remove
+         * @param removePrecedingComments if {@code true} any preceding comments will be removed
+         * @param removePrecedingWhitespace if {@code true} any preceding whitespace will be removed
+         */
         public void removeManagedDependency(Gavtcs removedDependency, boolean removePrecedingComments,
                 boolean removePrecedingWhitespace) {
             getContainerElement("project", "dependencyManagement", "dependencies")
@@ -1408,10 +1504,28 @@ public class PomTransformer {
                                     removePrecedingWhitespace)));
         }
 
+        /**
+         * Adds a dependency unless it available already
+         *
+         * @param gavtcs the dependency to add
+         * @param comparator decides where to add the given dependency amongst the existing dependencies
+         *
+         * @see Comparators
+         */
         public void addDependencyIfNeeded(Gavtcs gavtcs, Comparator<Gavtcs> comparator) {
             getOrAddContainerElement("dependencies").addGavtcsIfNeeded(gavtcs, comparator);
         }
 
+        /**
+         * Adds a text node under the given {@code parent} unless the specified node exists already.
+         *
+         * @param parent the {@link Node} under which the specified text node should be added
+         * @param nodeName the name of the node to add
+         * @param nodeValue the text value of the node to add
+         * @param comparator decides where to add the given dependency amongst the existing dependencies
+         *
+         * @see Comparators
+         */
         public void addTextChildIfNeeded(ContainerElement parent, String nodeName, String nodeValue,
                 Comparator<String> comparator) {
             parent.addChildTextElementIfNeeded(nodeName, nodeValue,
@@ -1426,8 +1540,8 @@ public class PomTransformer {
          *                                  otherwise the preceding comments won't be removed
          * @param removePrecedingWhitespace if {@code true} the whitespace nodes preceding the removed nodes will be
          *                                  also be removed; otherwise the preceding whitespace nodes won't be removed
-         * @param onlyIfEmpty               the node is removed only if it has no child nodes or if it has only comment and
-         *                                  whitespace child nodes
+         * @param onlyIfEmpty            if {@code true}, the node is removed only if it has no child nodes or if it has only comment and
+         *                               whitespace child nodes; otherwise the node is always removed
          */
         public void removeNode(String xPathExpression, boolean removePrecedingComments, boolean removePrecedingWhitespace,
                 boolean onlyIfEmpty) {
@@ -1445,8 +1559,8 @@ public class PomTransformer {
          * @param xPathExpression        an XPath expression to select {@link Node}s to remove
          * @param precedingNodesConsumer a custom handler for e.g. removing the preceding whitespace and commets - see
          *                               {@link #removePrecedingCommentsAndWhiteSpace(boolean, boolean)}
-         * @param onlyIfEmpty            the node is removed only if it has no child nodes or if it has only comment and
-         *                               whitespace child nodes
+         * @param onlyIfEmpty            if {@code true}, the node is removed only if it has no child nodes or if it has only comment and
+         *                               whitespace child nodes; otherwise the node is always removed
          */
         public void removeNode(String xPathExpression, BiConsumer<Node, Node> precedingNodesConsumer,
                 boolean onlyIfEmpty) {
@@ -1576,11 +1690,19 @@ public class PomTransformer {
             return false;
         }
 
+        /**
+         * Encloses the given text node in XML comment marks {@code <!--} and {@code -->} optionally adding a comment before the closing mark.
+         *
+         * @param node the node to comment
+         * @param commentText an optional comment text to add before the closing mark {@code -->}
+         * @return the new {@link Comment} node
+         */
         public static Comment commentTextNode(Node node, String commentText) {
             final String moduleText = node.getTextContent();
             final Node parent = node.getParentNode();
+            final String nodeName = node.getLocalName();
             final Comment moduleComment = node.getOwnerDocument()
-                    .createComment(MODULE_COMMENT_PREFIX + moduleText + MODULE_COMMENT_INFIX + commentText + " ");
+                    .createComment("<" + nodeName +">" + moduleText + "</" + nodeName +">" + (commentText != null ? commentText + " " : ""));
             parent.replaceChild(moduleComment, node);
             return moduleComment;
         }
@@ -1674,75 +1796,76 @@ public class PomTransformer {
     /**
      * A transformation of a DOM
      */
-    public interface Transformation {
-
-        public static Transformation addModule(String module) {
-            return addModules(null, Collections.singleton(module));
+    public interface Transformer {
+        /**
+         * @deprecated use {@link modules#addIfNeeded(String)}
+         */
+        public static Transformer addModule(String module) {
+            return modules.addIfNeeded(module);
         }
 
-        public static Transformation addModules(String profileId, String... modulePaths) {
-            return addModules(profileId, Arrays.asList(modulePaths));
+        /**
+         * @deprecated use {@link modules#addIfNeeded(String, String...)}
+         */
+        public static Transformer addModules(String profileId, String... modulePaths) {
+            return modules.addIfNeeded(profileId, modulePaths);
         }
 
-        public static Transformation addModuleIfNeeded(String module, Comparator<String> comparator) {
-            return (Document document, TransformationContext context) -> {
-                ContainerElement modules = context.getOrAddContainerElement("modules");
-                context.addTextChildIfNeeded(modules, "module", module, comparator);
-            };
+        /**
+         * @deprecated use {@link modules#addIfNeeded(String, Comparator)}
+         */
+        public static Transformer addModuleIfNeeded(String module, Comparator<String> comparator) {
+            return modules.addIfNeeded(module, comparator);
         }
 
-        public static Transformation addModules(String profileId, Collection<String> modulePaths) {
-            return addModulesIfNeeded(profileId, null, modulePaths);
+        /**
+         * @deprecated use {@link modules#addIfNeeded(String, Collection)}
+         */
+        public static Transformer addModules(String profileId, Collection<String> modulePaths) {
+            return modules.addIfNeeded(profileId, null, modulePaths);
         }
 
-        public static Transformation addModulesIfNeeded(String profileId, Comparator<String> comparator,
+        /**
+         * @deprecated use {@link modules#addIfNeeded(String, Comparator)}
+         */
+        public static Transformer addModulesIfNeeded(String profileId, Comparator<String> comparator,
                 Collection<String> modulePaths) {
-            return (Document document, TransformationContext context) -> {
-                final ContainerElement profileParent = context.getOrAddProfileParent(profileId);
-                final ContainerElement modules = profileParent.getOrAddChildContainerElement("modules");
-                for (String m : modulePaths) {
-                    if (comparator != null) {
-                        context.addTextChildIfNeeded(modules, "module", m, comparator);
-                    } else {
-                        modules.addChildTextElement("module", m);
-                    }
-                }
-            };
+            return modules.addIfNeeded(profileId, comparator, modulePaths);
         }
 
-        public static Transformation addProperty(String name, String value) {
-            return (Document document, TransformationContext context) -> {
+        public static Transformer addProperty(String name, String value) {
+            return (TransformationContext context) -> {
                 final ContainerElement props = context.getOrAddContainerElement("properties");
                 props.addChildTextElement(name, value);
             };
         }
 
-        public static Transformation addOrSetProperty(String name, String value) {
-            return (Document document, TransformationContext context) -> {
+        public static Transformer addOrSetProperty(String name, String value) {
+            return (TransformationContext context) -> {
                 final ContainerElement props = context.getOrAddContainerElement("properties");
                 props.addOrSetChildTextElement(name, value);
             };
         }
 
-        public static Transformation addContainerElementsIfNeeded(String elementName, String... furtherNames) {
-            return (Document document, TransformationContext context) -> context.getOrAddContainerElements(elementName,
+        public static Transformer addContainerElementsIfNeeded(String elementName, String... furtherNames) {
+            return (TransformationContext context) -> context.getOrAddContainerElements(elementName,
                     furtherNames);
         }
 
-        public static Transformation addManagedDependency(String groupId, String artifactId, String version) {
+        public static Transformer addManagedDependency(String groupId, String artifactId, String version) {
             return addManagedDependency(new Gavtcs(groupId, artifactId, version, null, null, null));
         }
 
-        public static Transformation addManagedDependency(Gavtcs gavtcs) {
-            return (Document document, TransformationContext context) -> {
+        public static Transformer addManagedDependency(Gavtcs gavtcs) {
+            return (TransformationContext context) -> {
                 final ContainerElement dependencyManagementDeps = context.getOrAddContainerElements("dependencyManagement",
                         "dependencies");
                 dependencyManagementDeps.addGavtcs(gavtcs);
             };
         }
 
-        public static Transformation addManagedDependencyIfNeeded(Gavtcs gavtcs) {
-            return (Document document, TransformationContext context) -> {
+        public static Transformer addManagedDependencyIfNeeded(Gavtcs gavtcs) {
+            return (TransformationContext context) -> {
                 final ContainerElement dependencyManagementDeps = context.getOrAddContainerElements("dependencyManagement",
                         "dependencies");
 
@@ -1755,14 +1878,14 @@ public class PomTransformer {
             };
         }
 
-        public static Transformation commentModules(Collection<String> modulesToComment, String commentText) {
-            return (Document document, TransformationContext context) -> {
+        public static Transformer commentModules(Collection<String> modulesToComment, String commentText) {
+            return (TransformationContext context) -> {
 
                 for (String m : modulesToComment) {
                     final String xPathExpr = PomTunerUtils.anyNs("project", "modules", "module") + "[text() = '" + m + "'"
                             + "]";
                     try {
-                        final NodeList moduleNodes = (NodeList) context.getXPath().evaluate(xPathExpr, document,
+                        final NodeList moduleNodes = (NodeList) context.getXPath().evaluate(xPathExpr, context.document,
                                 XPathConstants.NODESET);
                         for (int i = 0; i < moduleNodes.getLength(); i++) {
                             TransformationContext.commentTextNode(moduleNodes.item(i), commentText);
@@ -1782,9 +1905,9 @@ public class PomTransformer {
          * @param  commentText      Explanation for the comment
          * @return                  Transformation.
          */
-        public static Transformation commentModulesInProfile(String profile, Collection<String> modulesToComment,
+        public static Transformer commentModulesInProfile(String profile, Collection<String> modulesToComment,
                 String commentText) {
-            return (Document document, TransformationContext context) -> {
+            return (TransformationContext context) -> {
 
                 for (String m : modulesToComment) {
                     final String xPathExpr = PomTunerUtils.anyNs("project", "profiles", "profile", "id") + "[text() = '"
@@ -1794,7 +1917,7 @@ public class PomTransformer {
                             + "/following-sibling::"
                             + PomTunerUtils.anyNs("modules", "module").substring(1) + "[text() = '" + m + "'" + "]";
                     try {
-                        final NodeList moduleNodes = (NodeList) context.getXPath().evaluate(xPathExpr, document,
+                        final NodeList moduleNodes = (NodeList) context.getXPath().evaluate(xPathExpr, context.document,
                                 XPathConstants.NODESET);
                         for (int i = 0; i < moduleNodes.getLength(); i++) {
                             TransformationContext.commentTextNode(moduleNodes.item(i), commentText);
@@ -1811,12 +1934,12 @@ public class PomTransformer {
          * @param  gas        the list of {@link Ga} on which the {@code newVersion} should be set
          * @return            a new {@link Transformation}
          */
-        public static Transformation setManagedDependencyVersion(String newVersion, Collection<Ga> gas) {
+        public static Transformer setManagedDependencyVersion(String newVersion, Collection<Ga> gas) {
             return setManagedDependencyVersion(null, newVersion, gas);
         }
 
-        public static Transformation setManagedDependencyVersion(String profileId, String newVersion, Collection<Ga> gas) {
-            return (Document document, TransformationContext context) -> {
+        public static Transformer setManagedDependencyVersion(String profileId, String newVersion, Collection<Ga> gas) {
+            return (TransformationContext context) -> {
                 final ContainerElement profileParent = context.getProfileParent(profileId)
                         .orElseThrow(() -> new IllegalStateException(
                                 "No such profile '" + profileId + "' found in " + context.getPomXmlPath()));
@@ -1838,12 +1961,12 @@ public class PomTransformer {
             };
         }
 
-        public static Transformation setDependencyVersion(String newVersion, Collection<Ga> gas) {
+        public static Transformer setDependencyVersion(String newVersion, Collection<Ga> gas) {
             return setDependencyVersion(null, newVersion, gas);
         }
 
-        public static Transformation setDependencyVersion(String profileId, String newVersion, Collection<Ga> gas) {
-            return (Document document, TransformationContext context) -> {
+        public static Transformer setDependencyVersion(String profileId, String newVersion, Collection<Ga> gas) {
+            return (TransformationContext context) -> {
                 final ContainerElement profileParent = context.getProfileParent(profileId)
                         .orElseThrow(() -> new IllegalStateException(
                                 "No such profile '" + profileId + "' found in " + context.getPomXmlPath()));
@@ -1862,16 +1985,16 @@ public class PomTransformer {
             };
         }
 
-        public static Transformation addDependencyIfNeeded(Gavtcs gavtcs, Comparator<Gavtcs> comparator) {
-            return (Document document, TransformationContext context) -> context.addDependencyIfNeeded(gavtcs, comparator);
+        public static Transformer addDependencyIfNeeded(Gavtcs gavtcs, Comparator<Gavtcs> comparator) {
+            return (TransformationContext context) -> context.addDependencyIfNeeded(gavtcs, comparator);
         }
 
-        public static Transformation updateMappedDependencies(
+        public static Transformer updateMappedDependencies(
                 Predicate<Gavtcs> isSubsetMember,
                 Function<Gavtcs, Optional<Gavtcs>> dependencyMapper,
                 Comparator<Gavtcs> comparator,
                 String initialComment) {
-            return (Document document, TransformationContext context) -> {
+            return (TransformationContext context) -> {
                 final Set<? extends Gavtcs> deps = context.getDependencies();
                 final Set<Gavtcs> newMappedDeps = new TreeSet<>(comparator);
                 for (Gavtcs dep : deps) {
@@ -1900,12 +2023,12 @@ public class PomTransformer {
             };
         }
 
-        public static Transformation updateDependencySubset(
+        public static Transformer updateDependencySubset(
                 Predicate<Gavtcs> isSubsetMember,
                 Collection<Gavtcs> newSubset,
                 Comparator<Gavtcs> comparator,
                 String initialComment) {
-            return (Document document, TransformationContext context) -> {
+            return (TransformationContext context) -> {
                 Set<Gavtcs> depsToAdd = new TreeSet<>(comparator);
                 depsToAdd.addAll(newSubset);
 
@@ -1933,9 +2056,9 @@ public class PomTransformer {
             };
         }
 
-        public static Transformation removeContainerElementIfEmpty(boolean removePrecedingComments,
+        public static Transformer removeContainerElementIfEmpty(boolean removePrecedingComments,
                 boolean removePrecedingWhitespace, boolean onlyIfEmpty, String elementName, String... furtherNames) {
-            return (Document document, TransformationContext context) -> {
+            return (TransformationContext context) -> {
                 final String[] path = new String[furtherNames.length + 2];
                 int i = 0;
                 path[i++] = "project";
@@ -1948,17 +2071,17 @@ public class PomTransformer {
             };
         }
 
-        public static Transformation removeModule(boolean removePrecedingComments, boolean removePrecedingWhitespace,
+        public static Transformer removeModule(boolean removePrecedingComments, boolean removePrecedingWhitespace,
                 String module) {
-            return (Document document, TransformationContext context) -> {
+            return (TransformationContext context) -> {
                 final String xPath = PomTunerUtils.anyNs("project", "modules", "module") + "[text() = '" + module + "']";
                 context.removeNode(xPath, removePrecedingComments, removePrecedingWhitespace, false);
             };
         }
 
-        public static Transformation removeModules(boolean removePrecedingComments, boolean removePrecedingWhitespace,
+        public static Transformer removeModules(boolean removePrecedingComments, boolean removePrecedingWhitespace,
                 Set<String> modules) {
-            return (Document document, TransformationContext context) -> {
+            return (TransformationContext context) -> {
                 for (String module : modules) {
                     final String xPath = PomTunerUtils.anyNs("project", "modules", "module") + "[text() = '" + module + "']";
                     context.removeNode(xPath, removePrecedingComments, removePrecedingWhitespace, false);
@@ -1966,9 +2089,9 @@ public class PomTransformer {
             };
         }
 
-        public static Transformation removeAllModules(String profileId, boolean removePrecedingComments,
+        public static Transformer removeAllModules(String profileId, boolean removePrecedingComments,
                 boolean removePrecedingWhitespace) {
-            return (Document document, TransformationContext context) -> {
+            return (TransformationContext context) -> {
                 context.getProfileParent(profileId)
                         .flatMap(profileParent -> profileParent.getChildContainerElement("modules"))
                         .ifPresent(modules -> {
@@ -1982,17 +2105,17 @@ public class PomTransformer {
             };
         }
 
-        public static Transformation uncommentModules(String commentText) {
+        public static Transformer uncommentModules(String commentText) {
             return uncommentModules(commentText, m -> true);
         }
 
-        public static Transformation uncommentModules(String commentText, Predicate<String> modulePathFilter) {
+        public static Transformer uncommentModules(String commentText, Predicate<String> modulePathFilter) {
             return uncommentModules(commentText, modulePathFilter, null);
         }
 
-        public static Transformation uncommentModules(String commentText, Predicate<String> modulePathFilter,
+        public static Transformer uncommentModules(String commentText, Predicate<String> modulePathFilter,
                 String profileId) {
-            return (Document document, TransformationContext context) -> {
+            return (TransformationContext context) -> {
                 final String xPathExpr;
 
                 if (profileId == null) {
@@ -2011,7 +2134,7 @@ public class PomTransformer {
                             + commentText + " ']";
                 }
                 try {
-                    final NodeList commentNodes = (NodeList) context.getXPath().evaluate(xPathExpr, document,
+                    final NodeList commentNodes = (NodeList) context.getXPath().evaluate(xPathExpr, context.document,
                             XPathConstants.NODESET);
                     for (int i = 0; i < commentNodes.getLength(); i++) {
                         final Node commentNode = commentNodes.item(i);
@@ -2033,9 +2156,9 @@ public class PomTransformer {
             };
         }
 
-        public static Transformation removeProperty(boolean removePrecedingComments, boolean removePrecedingWhitespace,
+        public static Transformer removeProperty(boolean removePrecedingComments, boolean removePrecedingWhitespace,
                 String propertyName) {
-            return (Document document, TransformationContext context) -> {
+            return (TransformationContext context) -> {
                 final String xPath = PomTunerUtils.anyNs("project", "properties", propertyName);
                 context.removeNode(xPath, removePrecedingComments, removePrecedingWhitespace, false);
             };
@@ -2058,7 +2181,7 @@ public class PomTransformer {
          * @deprecated                           use
          *                                       {@code removePlugins(null, removePrecedingComments, removePrecedingWhitespace, Gavtcs.equalGroupIdAndArtifactId(groupId, artifactId))}
          */
-        public static Transformation removePlugin(boolean removePrecedingComments, boolean removePrecedingWhitespace,
+        public static Transformer removePlugin(boolean removePrecedingComments, boolean removePrecedingWhitespace,
                 String groupId, String artifactId) {
             return removePlugins(null, removePrecedingComments, removePrecedingWhitespace,
                     Gavtcs.equalGroupIdAndArtifactId(groupId, artifactId));
@@ -2078,10 +2201,10 @@ public class PomTransformer {
          *                                   {@link Gavtcs#equalGroupIdAndArtifactId(String, String)}
          * @return                           a new {@link Transformation}
          */
-        public static Transformation removePlugins(String profileId, boolean removePrecedingComments,
+        public static Transformer removePlugins(String profileId, boolean removePrecedingComments,
                 boolean removePrecedingWhitespace,
                 Predicate<Gavtcs> predicate) {
-            return (Document document, TransformationContext context) -> {
+            return (TransformationContext context) -> {
                 context.removeGavtcs(profileId, removePrecedingComments, removePrecedingWhitespace, predicate, "build",
                         "plugins");
             };
@@ -2101,7 +2224,7 @@ public class PomTransformer {
          *
          * @deprecated                           use {@link #removeDependencies(String, boolean, boolean, Predicate)}
          */
-        public static Transformation removeDependency(boolean removePrecedingComments, boolean removePrecedingWhitespace,
+        public static Transformer removeDependency(boolean removePrecedingComments, boolean removePrecedingWhitespace,
                 Predicate<Gavtcs> predicate) {
             return removeDependencies(null, removePrecedingComments, removePrecedingWhitespace, predicate);
         }
@@ -2120,10 +2243,10 @@ public class PomTransformer {
          *                                   {@link Gavtcs#equalGroupIdAndArtifactId(String, String)}
          * @return                           a new {@link Transformation}
          */
-        public static Transformation removeDependencies(String profileId, boolean removePrecedingComments,
+        public static Transformer removeDependencies(String profileId, boolean removePrecedingComments,
                 boolean removePrecedingWhitespace,
                 Predicate<Gavtcs> predicate) {
-            return (Document document, TransformationContext context) -> {
+            return (TransformationContext context) -> {
                 context.removeGavtcs(profileId, removePrecedingComments, removePrecedingWhitespace, predicate, "dependencies");
             };
         }
@@ -2142,7 +2265,7 @@ public class PomTransformer {
          *
          * @deprecated                           use {@link #removeManagedDependencies(String, boolean, boolean, Predicate)}
          */
-        public static Transformation removeManagedDependencies(boolean removePrecedingComments,
+        public static Transformer removeManagedDependencies(boolean removePrecedingComments,
                 boolean removePrecedingWhitespace,
                 Predicate<Gavtcs> predicate) {
             return removeManagedDependencies(null, removePrecedingComments, removePrecedingWhitespace, predicate);
@@ -2162,10 +2285,10 @@ public class PomTransformer {
          *                                   {@link Gavtcs#equalGroupIdAndArtifactId(String, String)}
          * @return                           a new {@link Transformation}
          */
-        public static Transformation removeManagedDependencies(String profileId, boolean removePrecedingComments,
+        public static Transformer removeManagedDependencies(String profileId, boolean removePrecedingComments,
                 boolean removePrecedingWhitespace,
                 Predicate<Gavtcs> predicate) {
-            return (Document document, TransformationContext context) -> {
+            return (TransformationContext context) -> {
                 context.removeGavtcs(profileId, removePrecedingComments, removePrecedingWhitespace, predicate,
                         "dependencyManagement", "dependencies");
             };
@@ -2179,8 +2302,8 @@ public class PomTransformer {
          * @param  relativePath a value for the {@code relativePath} element or {@code null} if it should be removed
          * @return              a new {@link Transformation}
          */
-        public static Transformation setParent(String artifactId, String relativePath) {
-            return (Document document, TransformationContext context) -> {
+        public static Transformer setParent(String artifactId, String relativePath) {
+            return (TransformationContext context) -> {
                 ContainerElement parent = context.getContainerElement("project", "parent")
                         .orElseThrow(() -> new IllegalStateException("No parent element in " + context.getPomXmlPath()));
                 parent.addOrSetChildTextElement("artifactId", artifactId);
@@ -2192,12 +2315,8 @@ public class PomTransformer {
             };
         }
 
-        public static Transformation setTextValue(String selector, String newValue) {
-            return new SetTextValueTransformation(selector, newValue);
-        }
-
-        public static Transformation addManagedPlugin(String groupId, String artifactId, String version) {
-            return (Document document, TransformationContext context) -> {
+        public static Transformer addManagedPlugin(String groupId, String artifactId, String version) {
+            return (TransformationContext context) -> {
                 final ContainerElement managedPlugins = context.getOrAddContainerElements("build", "pluginManagement",
                         "plugins");
                 final ContainerElement pluginElement = managedPlugins.addChildContainerElement("plugin");
@@ -2207,17 +2326,17 @@ public class PomTransformer {
             };
         }
 
-        public static Transformation addFragment(DocumentFragment fragment, String parentPathFirst, String... parentPathOther) {
-            return (Document document, TransformationContext context) -> {
+        public static Transformer addFragment(DocumentFragment fragment, String parentPathFirst, String... parentPathOther) {
+            return (TransformationContext context) -> {
                 final ContainerElement parent = context.getOrAddContainerElements(parentPathFirst, parentPathOther);
                 parent.addFragment(fragment);
             };
         }
 
-        public static Transformation keepFirst(String xPath, boolean removePrecedingWhitespace) {
-            return (Document document, TransformationContext context) -> {
+        public static Transformer keepFirst(String xPath, boolean removePrecedingWhitespace) {
+            return (TransformationContext context) -> {
                 try {
-                    NodeList nodes = (NodeList) context.getXPath().evaluate(xPath, document, XPathConstants.NODESET);
+                    NodeList nodes = (NodeList) context.getXPath().evaluate(xPath, context.document, XPathConstants.NODESET);
                     if (nodes.getLength() > 1) {
                         for (int i = 1; i < nodes.getLength(); i++) {
                             Node deletedNode = nodes.item(i);
@@ -2250,9 +2369,9 @@ public class PomTransformer {
          * @param  path                      a vararg of element names
          * @return                           a new {@link Transformation}
          */
-        public static Transformation removeIfEmpty(boolean removePrecedingComments, boolean removePrecedingWhitespace,
+        public static Transformer removeIfEmpty(boolean removePrecedingComments, boolean removePrecedingWhitespace,
                 String... path) {
-            return (Document document, TransformationContext context) -> {
+            return (TransformationContext context) -> {
                 context.getContainerElement(path).ifPresent(element -> {
                     if (!element.childElements().iterator().hasNext()) {
                         element.remove(removePrecedingComments, removePrecedingWhitespace);
@@ -2264,10 +2383,38 @@ public class PomTransformer {
         /**
          * Perform this {@link Transformation} on the given {@code document}
          *
-         * @param document the {@link Document} to transform
          * @param context  the current {@link TransformationContext}
          */
+        void perform(TransformationContext context);
+
+    }
+    public interface Transformation extends Transformer{
+
+        public static Transformation setTextValue(String selector, String newValue) {
+            return new SetTextValueTransformation(selector, newValue);
+        }
+
+
+        /**
+         * Perform this {@link Transformation} on the given {@code document}
+         *
+         * @param document the {@link Document} to transform
+         * @param context  the current {@link TransformationContext}
+         *
+         * @deprecated use {@link #perform(TransformationContext)} and get the {@link Document} from the {@link TransformationContext}
+         */
         void perform(Document document, TransformationContext context);
+
+        /**
+         * Perform this {@link Transformation} on the given {@code document}
+         *
+         * @param context  the current {@link TransformationContext}
+         */
+        @Override
+        default void perform(TransformationContext context) {
+            perform(context.document, context);;
+        }
+
 
         public static class SetTextValueTransformation implements Transformation {
 

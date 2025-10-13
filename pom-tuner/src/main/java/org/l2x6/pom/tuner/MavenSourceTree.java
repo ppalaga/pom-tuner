@@ -45,6 +45,7 @@ import org.l2x6.pom.tuner.PomTransformer.Transformation;
 import org.l2x6.pom.tuner.model.Dependency;
 import org.l2x6.pom.tuner.model.Expression;
 import org.l2x6.pom.tuner.model.Expression.NoSuchPropertyException;
+import org.l2x6.pom.tuner.transform.modules;
 import org.l2x6.pom.tuner.model.Ga;
 import org.l2x6.pom.tuner.model.GavExpression;
 import org.l2x6.pom.tuner.model.GavSet;
@@ -255,7 +256,7 @@ public class MavenSourceTree {
         }
 
         /**
-         * Perform the operations added via {@link #add(String, DomEdit)}.
+         * Perform the operations added via {@link #addIfNeeded(String, DomEdit)}.
          *
          * @param rootDirectory
          * @param encoding
@@ -1023,7 +1024,7 @@ public class MavenSourceTree {
             final String relPath = en.getKey();
             final List<Transformation> transformations = new ArrayList<>();
             for (Profile p : en.getValue().getProfiles()) {
-                transformations.add(Transformation.uncommentModules(commentText, m -> true, p.getId()));
+                transformations.addIfNeeded(Transformation.uncommentModules(commentText, m -> true, p.getId()));
             }
             final Path pomXmlPath = rootDirectory.resolve(relPath);
             new PomTransformer(pomXmlPath, encoding, simpleElementWhitespace)
