@@ -23,11 +23,14 @@ import java.nio.charset.Charset;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.AbstractMap;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.Comparator;
+import java.util.Deque;
+import java.util.HashMap;
 import java.util.Iterator;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -39,6 +42,7 @@ import java.util.Set;
 import java.util.SortedSet;
 import java.util.TreeMap;
 import java.util.TreeSet;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.BiConsumer;
 import java.util.function.Consumer;
 import java.util.function.Function;
@@ -49,14 +53,16 @@ import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 import java.util.stream.StreamSupport;
+import javax.xml.parsers.ParserConfigurationException;
+import javax.xml.parsers.SAXParserFactory;
 import javax.xml.transform.Transformer;
 import javax.xml.transform.TransformerException;
 import javax.xml.transform.TransformerFactory;
 import javax.xml.transform.TransformerFactoryConfigurationError;
 import javax.xml.transform.dom.DOMResult;
 import javax.xml.transform.dom.DOMSource;
+import javax.xml.transform.sax.SAXSource;
 import javax.xml.transform.stream.StreamResult;
-import javax.xml.transform.stream.StreamSource;
 import javax.xml.xpath.XPath;
 import javax.xml.xpath.XPathConstants;
 import javax.xml.xpath.XPathExpressionException;
@@ -71,6 +77,18 @@ import org.w3c.dom.Element;
 import org.w3c.dom.Node;
 import org.w3c.dom.NodeList;
 import org.w3c.dom.Text;
+import org.xml.sax.Attributes;
+import org.xml.sax.ContentHandler;
+import org.xml.sax.DTDHandler;
+import org.xml.sax.EntityResolver;
+import org.xml.sax.ErrorHandler;
+import org.xml.sax.InputSource;
+import org.xml.sax.Locator;
+import org.xml.sax.SAXException;
+import org.xml.sax.SAXNotRecognizedException;
+import org.xml.sax.SAXNotSupportedException;
+import org.xml.sax.XMLReader;
+import org.xml.sax.ext.LexicalHandler;
 
 /**
  * A utility to transform {@code pom.xml} files on the DOM level while keeping the original comments and formatting also
@@ -140,10 +158,16 @@ public class PomTransformer {
         final Document document;
         try {
             final DOMResult domResult = new DOMResult();
-            TransformerFactory.newInstance().newTransformer()
-                    .transform(new StreamSource(new StringReader(source.get())), domResult);
+            SAXParserFactory spf = SAXParserFactory.newInstance();
+            spf.setNamespaceAware(true);
+            spf.setFeature("http://xml.org/sax/features/external-general-entities", false);
+            spf.setFeature("http://xml.org/sax/features/external-parameter-entities", false);
+            XMLReader xmlReader = spf.newSAXParser().getXMLReader();
+            XMLReaderWrapper xmlReaderWrapper = new XMLReaderWrapper(xmlReader);
+            final SAXSource saxSource = new SAXSource(xmlReaderWrapper, new InputSource(new StringReader(source.get())));
+            TransformerFactory.newInstance().newTransformer().transform(saxSource, domResult);
             document = (Document) domResult.getNode();
-        } catch (TransformerException | TransformerFactoryConfigurationError e) {
+        } catch (TransformerException | TransformerFactoryConfigurationError | SAXException | ParserConfigurationException e) {
             throw new RuntimeException(String.format("Could not read DOM from [%s]", path), e);
         }
 
@@ -2329,6 +2353,226 @@ public class PomTransformer {
             }
         }
 
+    }
+
+    static class XMLReaderWrapper implements XMLReader {
+        private final XMLReader delegate;
+        private LexicalHandler lexicalHandler;
+        private ContentHandler contentHandler;
+
+        private XMLReaderWrapper(XMLReader delegate) {
+            this.delegate = delegate;
+        }
+
+        public boolean getFeature(String name) throws SAXNotRecognizedException, SAXNotSupportedException {
+            return delegate.getFeature(name);
+        }
+
+        public void setFeature(String name, boolean value) throws SAXNotRecognizedException, SAXNotSupportedException {
+            delegate.setFeature(name, value);
+        }
+
+        public Object getProperty(String name) throws SAXNotRecognizedException, SAXNotSupportedException {
+            return delegate.getProperty(name);
+        }
+
+        public void setProperty(String name, Object value) throws SAXNotRecognizedException, SAXNotSupportedException {
+            if (name.equals("http://xml.org/sax/properties/lexical-handler")) {
+                this.lexicalHandler = (LexicalHandler) value;
+                final CDataRecorder h = new CDataRecorder(this.contentHandler, this.lexicalHandler);
+                delegate.setContentHandler(h);
+                delegate.setProperty("http://xml.org/sax/properties/lexical-handler", h);
+            } else {
+                delegate.setProperty(name, value);
+            }
+        }
+
+        public void setEntityResolver(EntityResolver resolver) {
+            delegate.setEntityResolver(resolver);
+        }
+
+        public EntityResolver getEntityResolver() {
+            return delegate.getEntityResolver();
+        }
+
+        public void setDTDHandler(DTDHandler handler) {
+            delegate.setDTDHandler(handler);
+        }
+
+        public DTDHandler getDTDHandler() {
+            return delegate.getDTDHandler();
+        }
+
+        public void setContentHandler(ContentHandler handler) {
+            try {
+                this.contentHandler = handler;
+                final CDataRecorder h = new CDataRecorder(contentHandler, lexicalHandler);
+                delegate.setContentHandler(h);
+                delegate.setProperty("http://xml.org/sax/properties/lexical-handler", h);
+            } catch (SAXNotRecognizedException | SAXNotSupportedException e) {
+                throw new RuntimeException(e);
+            }
+        }
+
+        public ContentHandler getContentHandler() {
+            return delegate.getContentHandler();
+        }
+
+        public void setErrorHandler(ErrorHandler handler) {
+            delegate.setErrorHandler(handler);
+        }
+
+        public ErrorHandler getErrorHandler() {
+            return delegate.getErrorHandler();
+        }
+
+        public void parse(InputSource input) throws IOException, SAXException {
+            delegate.parse(input);
+        }
+
+        public void parse(String systemId) throws IOException, SAXException {
+            delegate.parse(systemId);
+        }
+    }
+
+    private static class CDataRecorder implements ContentHandler, LexicalHandler {
+        private LexicalHandler lexicalHandler;
+        private final ContentHandler contentHandler;
+        private final Deque<StackNode> stack = new ArrayDeque<>();
+
+        private final List<String> cdataNodes = new ArrayList<>();
+
+        private CDataRecorder(ContentHandler contentHandler, LexicalHandler lexicalHandler) {
+            this.contentHandler = contentHandler;
+            this.lexicalHandler = lexicalHandler;
+        }
+
+        public void setDocumentLocator(Locator locator) {
+            if (contentHandler != null) {
+                contentHandler.setDocumentLocator(locator);
+            }
+        }
+
+        public void startDocument() throws SAXException {
+            if (contentHandler != null) {
+                contentHandler.startDocument();
+            }
+        }
+
+        public void endDocument() throws SAXException {
+            contentHandler.endDocument();
+        }
+
+        public void startPrefixMapping(String prefix, String uri) throws SAXException {
+            if (contentHandler != null) {
+                contentHandler.startPrefixMapping(prefix, uri);
+            }
+        }
+
+        public void endPrefixMapping(String prefix) throws SAXException {
+            if (contentHandler != null) {
+                contentHandler.endPrefixMapping(prefix);
+            }
+        }
+
+        public void startElement(String uri, String localName, String qName, Attributes atts) throws SAXException {
+            if (!stack.isEmpty()) {
+                /* this is a non-root node */
+                stack.peek().child(localName);
+            }
+            stack.push(new StackNode(localName));
+            if (contentHandler != null) {
+                contentHandler.startElement(uri, localName, qName, atts);
+            }
+        }
+
+        public void endElement(String uri, String localName, String qName) throws SAXException {
+            stack.pop();
+            if (contentHandler != null) {
+                contentHandler.endElement(uri, localName, qName);
+            }
+        }
+
+        public void characters(char[] ch, int start, int length) throws SAXException {
+            if (contentHandler != null) {
+                contentHandler.characters(ch, start, length);
+            }
+        }
+
+        public void ignorableWhitespace(char[] ch, int start, int length) throws SAXException {
+            if (contentHandler != null) {
+                contentHandler.ignorableWhitespace(ch, start, length);
+            }
+        }
+
+        public void processingInstruction(String target, String data) throws SAXException {
+            if (contentHandler != null) {
+                contentHandler.processingInstruction(target, data);
+            }
+        }
+
+        public void skippedEntity(String name) throws SAXException {
+            if (contentHandler != null) {
+                contentHandler.skippedEntity(name);
+            }
+        }
+
+        public void startDTD(String name, String publicId, String systemId) throws SAXException {
+            if (lexicalHandler != null) {
+                lexicalHandler.startDTD(name, publicId, systemId);
+            }
+        }
+
+        public void endDTD() throws SAXException {
+            if (lexicalHandler != null) {
+                lexicalHandler.endDTD();
+            }
+        }
+
+        public void startEntity(String name) throws SAXException {
+            if (lexicalHandler != null) {
+                lexicalHandler.startEntity(name);
+            }
+        }
+
+        public void endEntity(String name) throws SAXException {
+            if (lexicalHandler != null) {
+                lexicalHandler.endEntity(name);
+            }
+        }
+
+        public void startCDATA() throws SAXException {
+            
+            if (lexicalHandler != null) {
+                lexicalHandler.startCDATA();
+            }
+        }
+
+        public void endCDATA() throws SAXException {
+            if (lexicalHandler != null) {
+                lexicalHandler.endCDATA();
+            }
+        }
+
+        public void comment(char[] ch, int start, int length) throws SAXException {
+            if (lexicalHandler != null) {
+                lexicalHandler.comment(ch, start, length);
+            }
+        }
+
+        private static class StackNode {
+            private final String elementName;
+            private Map<String, AtomicInteger> childElementCounters;
+            private StackNode(String elementName) {
+                this.elementName = elementName;
+            }
+            public void child(String localName) {
+                if (childElementCounters == null) {
+                    childElementCounters = new HashMap<>();
+                }
+                childElementCounters.computeIfAbsent(localName, k -> new AtomicInteger()).incrementAndGet();
+            }
+        }
     }
 
 }

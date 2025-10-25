@@ -3709,6 +3709,29 @@ public class PomTransformerTest {
 
     }
 
+    @Test
+    void cdata() {
+        final String source = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n" //
+                + "<project xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" xmlns=\"http://maven.apache.org/POM/4.0.0\"\n" //
+                + "         xsi:schemaLocation=\"http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd\">\n" //
+                + "    <modelVersion>4.0.0</modelVersion>\n" //
+                + "\n" //
+                + "    <properties>\n" //
+                + "        <p0><![CDATA[<crazy<mix>of characters &>]]></p0>\n" //
+                + "    </properties>\n" //
+                + "</project>\n";
+        final String expected = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n" //
+                + "<project xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" xmlns=\"http://maven.apache.org/POM/4.0.0\"\n" //
+                + "         xsi:schemaLocation=\"http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd\">\n" //
+                + "    <modelVersion>4.0.0</modelVersion>\n" //
+                + "\n" //
+                + "    <properties>\n" //
+                + "        <p0><![CDATA[(?si)(init process complete|skipping initialization).*ready to accept connections]]></p0>\n" //
+                + "    </properties>\n" //
+                + "</project>\n";
+        assertTransformation(source, Collections.emptyList(), expected);
+    }
+
     public IntStream intStream(int count) {
         return IntStream.range(1, count + 1);
     }
