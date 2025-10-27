@@ -23,11 +23,13 @@ import java.nio.charset.Charset;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.AbstractMap;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.Comparator;
+import java.util.Deque;
 import java.util.Iterator;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -56,16 +58,15 @@ import javax.xml.transform.Transformer;
 import javax.xml.transform.TransformerException;
 import javax.xml.transform.TransformerFactory;
 import javax.xml.transform.TransformerFactoryConfigurationError;
-import javax.xml.transform.dom.DOMResult;
 import javax.xml.transform.dom.DOMSource;
 import javax.xml.transform.stream.StreamResult;
-import javax.xml.transform.stream.StreamSource;
 import javax.xml.xpath.XPath;
 import javax.xml.xpath.XPathConstants;
 import javax.xml.xpath.XPathExpressionException;
 import javax.xml.xpath.XPathFactory;
 import org.l2x6.pom.tuner.model.Ga;
 import org.l2x6.pom.tuner.model.Gavtcs;
+import org.w3c.dom.CDATASection;
 import org.w3c.dom.Comment;
 import org.w3c.dom.DOMException;
 import org.w3c.dom.Document;
@@ -94,8 +95,6 @@ public class PomTransformer {
             Pattern.compile("(<\\?xml[^>]*\\?>)?(\\s*)<"),
             Pattern.compile("(\\s*)<project([^>]*)>")
     };
-    static final Pattern CDATA_START_PATTERN = Pattern.compile("\\Q<![CDATA[\\E");
-    static final Pattern CDATA_END_PATTERN = Pattern.compile("\\Q]]>\\E");
     static final Pattern EOL_PATTERN = Pattern.compile("\r?\n");
     static final Pattern WS_PATTERN = Pattern.compile("[ \t\n\r]+");
     static final Pattern INDENT_PATTERN = Pattern.compile("(\r?\n)([ \t]+)");
@@ -145,26 +144,26 @@ public class PomTransformer {
         String src = source.get();
         final String eol = detectEol(src);
 
-        final Matcher cdataStartMatcher = CDATA_START_PATTERN.matcher(src);
-        final boolean hasCData = cdataStartMatcher.find();
-        char startCData = 0;
-        char endCData = 0;
-        if (hasCData) {
-            startCData = findUnusedChar(src, (char) 255);
-            endCData = findUnusedChar(src, (char) (startCData - 1));
-            src = cdataStartMatcher.replaceAll("<![CDATA[" + startCData);
-            src = CDATA_END_PATTERN.matcher(src).replaceAll(endCData + "]]>");
-        }
-
         final Document document;
+        //        try {
+        //            final DOMResult domResult = new DOMResult();
+        //            TransformerFactory.newInstance().newTransformer()
+        //                    .transform(new StreamSource(new StringReader(src)), domResult);
+        //            document = (Document) domResult.getNode();
+        //        } catch (TransformerException | TransformerFactoryConfigurationError e) {
+        //            throw new RuntimeException(String.format("Could not read DOM from [%s]", path), e);
+        //        }
+
         try {
-            final DOMResult domResult = new DOMResult();
-            TransformerFactory.newInstance().newTransformer()
-                    .transform(new StreamSource(new StringReader(src)), domResult);
-            document = (Document) domResult.getNode();
-        } catch (TransformerException | TransformerFactoryConfigurationError e) {
+            DocumentBuilderFactory f = DocumentBuilderFactory.newInstance();
+            f.setNamespaceAware(true);
+            DocumentBuilder builder = f.newDocumentBuilder();
+            document = builder.parse(new InputSource(new StringReader(src)));
+        } catch (ParserConfigurationException | SAXException | IOException e) {
             throw new RuntimeException(String.format("Could not read DOM from [%s]", path), e);
         }
+
+        final CDataNodes cDataNodes = new CDataNodes(document, src);
 
         final XPath xPath = XPathFactory.newInstance().newXPath();
         final TransformationContext context = new TransformationContext(path, document,
@@ -172,6 +171,9 @@ public class PomTransformer {
         for (Transformation edit : edits) {
             edit.perform(document, context);
         }
+
+        cDataNodes.tag();
+
         String result;
         try {
             StringWriter out = new StringWriter();
@@ -182,103 +184,10 @@ public class PomTransformer {
             throw new RuntimeException(String.format("Could not write DOM from [%s]", path), e);
         }
 
-        if (hasCData) {
-            result = restoreCData(result, startCData, endCData);
-        }
+        //result = cDataNodes.restoreCData(result);
         result = EOL_PATTERN.matcher(result).replaceAll(eol);
         result = postprocess(src, result, simpleElementWhitespace);
         outConsumer.accept(result);
-    }
-
-    /**
-     * @param  text the text to search in
-     * @param  ch   start decrementing at this character
-     * @return      a character not available in the given {@code text}
-     */
-    static char findUnusedChar(String text, char ch) {
-        /* First try in ISO Latin 1 range */
-        if (ch <= 255) {
-            do {
-                if (ch != '$' && ch != '\\' && text.indexOf(ch) < 0) {
-                    return ch;
-                }
-                ch--;
-            } while (ch >= 33);
-        }
-
-        /* Did not find anything in ISO Latin 1 range, try larger */
-        ch = '\uD800' - 1;
-        do {
-            if (text.indexOf(ch) < 0) {
-                return ch;
-            }
-            ch--;
-        } while (ch > 255);
-        throw new IllegalStateException("Could not find unused char in the document");
-    }
-
-    /**
-     * @param  xmlDocument the XML document having the text nodes that were originally CDATA enclosed in {@code startCData}
-     *                     and {@code endCData}
-     * @param  startCData  the start tag
-     * @param  endCData    the end tag
-     * @return             the document with CDATA sections restored
-     */
-    private static String restoreCData(String xmlDocument, char startCData, char endCData) {
-        Matcher m = Pattern.compile("\\Q" + startCData + "\\E([^" + escape(endCData) + "]*)\\Q" + endCData + "\\E")
-                .matcher(xmlDocument);
-        StringBuffer sb = new StringBuffer(xmlDocument.length());
-        while (m.find()) {
-            m.appendReplacement(sb, "<![CDATA["
-                    + unescapeXml(m.group(1))
-                            .replace("\\", "\\\\")
-                            .replace("$", "\\$")
-                    + "]]>");
-        }
-        m.appendTail(sb);
-        return sb.toString();
-    }
-
-    /**
-     * @param  escaped a string with some characters possibly escaped so that they can be used as a part of an XML text node
-     * @return         a the {@code escaped} string with unescaped special characters
-     */
-    private static String unescapeXml(String escaped) {
-        if (escaped.isEmpty()) {
-            return escaped;
-        }
-        String xml = "<root>" + escaped + "</root>";
-        DocumentBuilderFactory factory = DocumentBuilderFactory.newInstance();
-        factory.setExpandEntityReferences(true);
-        try {
-            Document doc = factory.newDocumentBuilder().parse(new InputSource(new StringReader(xml)));
-            return doc.getDocumentElement().getTextContent();
-        } catch (DOMException | SAXException | IOException | ParserConfigurationException e) {
-            throw new RuntimeException(e);
-        }
-    }
-
-    /**
-     * @param  character the character to escape
-     * @return           if the given {@code character} needs to be escaped for using withing a Java regex Character classe
-     *                   then it is prepended with {@code \} otherwise the given {@code character} is returned
-     */
-    static String escape(char character) {
-        if (Character.isSupplementaryCodePoint(character)) {
-            return String.format("\\x{%X}", character);
-        }
-        switch (character) {
-        case '\\':
-            return "\\\\";
-        case ']':
-            return "\\]";
-        case '-':
-            return "\\-";
-        case '^':
-            return "\\^";
-        default:
-            return String.valueOf(character); // literal
-        }
     }
 
     static String postprocess(String src, String result, SimpleElementWhitespace simpleElementWhitespace) {
@@ -396,6 +305,128 @@ public class PomTransformer {
         private SimpleElementWhitespace(boolean autodetect, String value) {
             this.autodetect = autodetect;
             this.value = value;
+        }
+
+    }
+
+    static class CDataNodes {
+        char startCData = 0;
+        char endCData = 0;
+        private final List<CDATASection> nodes;
+        private final String xmlSource;
+
+        public CDataNodes(Document doc, String xmlSource) {
+
+            final List<CDATASection> nodes = new ArrayList<>();
+            traverse(doc.getDocumentElement(), node -> {
+                if (node instanceof CDATASection) {
+                    nodes.add((CDATASection) node);
+                }
+            });
+            this.nodes = Collections.unmodifiableList(nodes);
+            this.xmlSource = xmlSource;
+        }
+
+        static void traverse(Node node, Consumer<Node> consumer) {
+
+            final Deque<Node> stack = new ArrayDeque<>();
+            stack.push(node);
+
+            while (!stack.isEmpty()) {
+                Node n = stack.pop();
+                consumer.accept(n);
+
+                NodeList kids = n.getChildNodes();
+                for (int i = kids.getLength() - 1; i >= 0; i--) {
+                    stack.push(kids.item(i));
+                }
+            }
+        }
+
+        public void tag() {
+            if (!nodes.isEmpty()) {
+                startCData = findUnusedChar(xmlSource, (char) 255);
+                endCData = findUnusedChar(xmlSource, (char) (startCData - 1));
+                for (CDATASection node : nodes) {
+                    node.setTextContent("" + startCData + node.getTextContent() + endCData);
+                }
+            }
+        }
+        //
+        //        /**
+        //         * @param  xmlDocument the XML document having the text nodes that were originally CDATA enclosed in
+        //         *                     {@code startCData}
+        //         *                     and {@code endCData}
+        //         * @return             the document with CDATA sections restored
+        //         */
+        //        public String restoreCData(String xmlDocument) {
+        //            if (!nodes.isEmpty()) {
+        //                Matcher m = Pattern.compile("\\Q" + startCData + "\\E([^" + endCData + "]*)\\Q" + endCData + "\\E")
+        //                        .matcher(xmlDocument);
+        //                StringBuffer sb = new StringBuffer(xmlDocument.length());
+        //                while (m.find()) {
+        //                    m.appendReplacement(sb, "<![CDATA["
+        //                            + unescapeXml(m.group(1))
+        //                                    .replace("\\", "\\\\")
+        //                                    .replace("$", "\\$")
+        //                            + "]]>");
+        //                }
+        //                m.appendTail(sb);
+        //                return sb.toString();
+        //            }
+        //            return xmlDocument;
+        //        }
+
+        /**
+         * @param  text the text to search in
+         * @param  ch   start decrementing at this character
+         * @return      a character not available in the given {@code text}
+         */
+        static char findUnusedChar(String text, char ch) {
+            /* First try in ISO Latin 1 range */
+            if (ch <= 255) {
+                do {
+                    if (ch != '$'
+                            && ch != '\\'
+                            && ch != ']'
+                            && ch != '-'
+                            && ch != '^'
+                            && text.indexOf(ch) < 0) {
+                        return ch;
+                    }
+                    ch--;
+                } while (ch >= 33);
+            }
+
+            /* Did not find anything in ISO Latin 1 range, try larger */
+            ch = '\uD800' - 1;
+            do {
+                if (text.indexOf(ch) < 0) {
+                    return ch;
+                }
+                ch--;
+            } while (ch > 255);
+            throw new IllegalStateException("Could not find unused char in the document");
+        }
+
+        /**
+         * @param  escaped a string with some characters possibly escaped so that they can be used as a part of an XML
+         *                 text node
+         * @return         a the {@code escaped} string with unescaped special characters
+         */
+        private static String unescapeXml(String escaped) {
+            if (escaped.isEmpty()) {
+                return escaped;
+            }
+            String xml = "<root>" + escaped + "</root>";
+            DocumentBuilderFactory factory = DocumentBuilderFactory.newInstance();
+            factory.setExpandEntityReferences(true);
+            try {
+                Document doc = factory.newDocumentBuilder().parse(new InputSource(new StringReader(xml)));
+                return doc.getDocumentElement().getTextContent();
+            } catch (DOMException | SAXException | IOException | ParserConfigurationException e) {
+                throw new RuntimeException(e);
+            }
         }
 
     }
@@ -1241,7 +1272,8 @@ public class PomTransformer {
          * of the current {@code pom.xml} file. If it exists, it is returned as a {@link ContainerElement}. Otherwise
          * a new element at the given path is added under {@code <project>} node of the current
          * {@code pom.xml} file. The insert position of {@code elementName} is given by the
-         * <a href="http://maven.apache.org/developers/conventions/code.html#POM_Code_Convention">POM Code Convention</a>.
+         * <a href="http://maven.apache.org/developers/conventions/code.html#POM_Code_Convention">POM Code
+         * Convention</a>.
          * <p>
          * Note that unlike this method, {@link #getContainerElement(String...)} operates on the document level. Hence
          * while you'd normally call {@code getOrAddContainerElements("dependencyManagement", "dependencies")}
@@ -1265,7 +1297,8 @@ public class PomTransformer {
          * of the current {@code pom.xml} file. If it exists, it is returned as a {@link ContainerElement}. Otherwise
          * a new element with the given {@code elementName} is added under {@code <project>} node of the current
          * {@code pom.xml} file. The insert position is given by the
-         * <a href="http://maven.apache.org/developers/conventions/code.html#POM_Code_Convention">POM Code Convention</a>.
+         * <a href="http://maven.apache.org/developers/conventions/code.html#POM_Code_Convention">POM Code
+         * Convention</a>.
          *
          * @param  elementName the name of the searched or newly added element
          * @return             a {@link ContainerElement} representing the existing or newly added node; never {@code null}
@@ -1457,7 +1490,8 @@ public class PomTransformer {
          * returned as an {@link ContainerElement} {@link Optional}. Otherwise an empty {@link Optional} is returned.
          * <p>
          * Note that unlike this method, {@link #getOrAddContainerElements(String...)} operates on the {@code <project>}
-         * node. Hence while you'd normally call {@code getOrAddContainerElements("dependencyManagement", "dependencies")}
+         * node. Hence while you'd normally call
+         * {@code getOrAddContainerElements("dependencyManagement", "dependencies")}
          * for {@code getContainerElement()} the arguments would have to start with {@code "project"}:
          * {@code getContainerElements("project", "dependencyManagement", "dependencies")}.
          *
@@ -1698,7 +1732,8 @@ public class PomTransformer {
         }
 
         /**
-         * @param  precedingNodesConsumer a {@link Consumer} to which the preceding comment and whitespace nodes are passed; can
+         * @param  precedingNodesConsumer a {@link Consumer} to which the preceding comment and whitespace nodes are
+         *                                passed; can
          *                                be {@code null}
          * @return                        a {@link Node} {@link Consumer} that deletes the given node, optionally passing the
          *                                preceding comment and whitespace nodes to the given {@code precedingNodesConsumer}
