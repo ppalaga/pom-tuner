@@ -338,7 +338,7 @@ public class GavtcsPattern implements Serializable, Comparable<GavtcsPattern>, P
         return groupIdPattern.matches(groupId) && //
                 artifactIdPattern.matches(artifactId) && //
                 versionPattern.matches(version) && //
-                typePattern.matches(Gavtcs.toEffectiveType(type)) && //
+                typePattern.matches(Gavtc.toEffectiveType(type)) && //
                 classifierPattern.matches(classifier == null ? "" : classifier) && //
                 scopePattern.matches(Gavtcs.toEffectiveScope(scope));
     }
@@ -359,6 +359,51 @@ public class GavtcsPattern implements Serializable, Comparable<GavtcsPattern>, P
                 typePattern.matches(gavtcs.getType()) && //
                 classifierPattern.matches(gavtcs.getClassifier()) && //
                 scopePattern.matches(gavtcs.getScope());
+    }
+
+    /**
+     * Matches the given {@code groupId}, {@code artifactId}, {@code version}, {@code type}, {@code classifier},
+     * {@code scope} sextuple against this {@link GavtcsPattern}.
+     *
+     * @param  groupId
+     * @param  artifactId
+     * @param  version
+     * @param  type
+     * @param  classifier
+     * @param  scope
+     * @return            {@code true} if this {@link GavtcsPattern} matches the given parameters and {@code false}
+     *                    otherwise
+     *
+     * @since             4.8.0
+     */
+    public boolean matches(
+            String groupId,
+            String artifactId,
+            String version,
+            String type,
+            String classifier) {
+        return groupIdPattern.matches(groupId) && //
+                artifactIdPattern.matches(artifactId) && //
+                versionPattern.matches(version) && //
+                typePattern.matches(Gavtc.toEffectiveType(type)) && //
+                classifierPattern.matches(classifier == null ? "" : classifier);
+    }
+
+    /**
+     * Matches the given {@code groupId}, {@code artifactId}, {@code version}, {@code type}, {@code classifier}
+     * pentuple against this {@link GavtcsPattern}.
+     *
+     * @param  gavtc
+     * @return       {@code true} if this {@link GavtcsPattern} matches the given parameters and {@code false} otherwise
+     *
+     * @since        4.8.0
+     */
+    public boolean matches(Gavtc gavtc) {
+        return groupIdPattern.matches(gavtc.getGroupId()) && //
+                artifactIdPattern.matches(gavtc.getArtifactId()) && //
+                versionPattern.matches(gavtc.getVersion()) && //
+                typePattern.matches(gavtc.getType()) && //
+                classifierPattern.matches(gavtc.getClassifier());
     }
 
     /**

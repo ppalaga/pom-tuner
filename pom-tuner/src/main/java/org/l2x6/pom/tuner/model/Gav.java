@@ -16,6 +16,7 @@
  */
 package org.l2x6.pom.tuner.model;
 
+import java.util.Objects;
 import java.util.StringTokenizer;
 
 /**
@@ -35,50 +36,51 @@ public class Gav implements Comparable<Gav> {
     public static Gav of(String gavString) {
         StringTokenizer st = new StringTokenizer(gavString, ":");
         if (!st.hasMoreTokens()) {
-            throw new IllegalStateException(String.format("Cannot parse [%s] to a " + Gav.class.getName(), gavString));
+            throw new IllegalStateException("Cannot parse '" + gavString + " to a " + Gav.class.getName()
+                    + "; expected '<groupId>:<artifactId>:<version>', found too little segments");
         } else {
             final String g = st.nextToken();
             if (!st.hasMoreTokens()) {
-                throw new IllegalStateException(
-                        String.format("Cannot parse [%s] to a " + Gav.class.getName(), gavString));
+                throw new IllegalStateException("Cannot parse '" + gavString + " to a " + Gav.class.getName()
+                        + "; expected '<groupId>:<artifactId>:<version>', found too little segments");
             } else {
                 final String a = st.nextToken();
                 if (!st.hasMoreTokens()) {
-                    throw new IllegalStateException(
-                            String.format("Cannot parse [%s] to a " + Gav.class.getName(), gavString));
+                    throw new IllegalStateException("Cannot parse '" + gavString + " to a " + Gav.class.getName()
+                            + "; expected '<groupId>:<artifactId>:<version>', found too little segments");
                 } else {
                     final String v = st.nextToken();
+                    if (st.hasMoreTokens()) {
+                        throw new IllegalStateException("Cannot parse '" + gavString + " to a " + Gav.class.getName()
+                                + "; expected '<groupId>:<artifactId>:<version>', found too many segments");
+                    }
                     return new Gav(g, a, v);
                 }
             }
         }
     }
 
-    private final String artifactId;
-    private final String groupId;
+    private final Ga ga;
     private final int hashCode;
     private final String version;
 
+    public Gav(Ga ga, String version) {
+        this.ga = ga;
+        this.version = Gavtc.emptyToNull(version);
+        this.hashCode = 31 * ga.hashCode() + (version == null ? 0 : version.hashCode());
+    }
+
     public Gav(String groupId, String artifactId, String version) {
-        super();
-        this.groupId = groupId;
-        this.artifactId = artifactId;
-        this.version = version;
-        this.hashCode = 31 * (31 * (31 + artifactId.hashCode()) + groupId.hashCode()) + version.hashCode();
+        this(new Ga(groupId, artifactId), version);
     }
 
     @Override
     public int compareTo(Gav o) {
-        int result = this.groupId.compareTo(o.groupId);
+        int result = this.ga.compareTo(o.ga);
         if (result != 0) {
             return result;
         } else {
-            result = this.artifactId.compareTo(o.artifactId);
-            if (result != 0) {
-                return result;
-            } else {
-                return this.version.compareTo(o.version);
-            }
+            return Gavtc.SAFE_STRING_COMPARATOR.compare(version, o.version);
         }
     }
 
@@ -91,16 +93,15 @@ public class Gav implements Comparable<Gav> {
         if (getClass() != obj.getClass())
             return false;
         Gav other = (Gav) obj;
-        return this.version.equals(other.version) && this.artifactId.equals(other.artifactId)
-                && this.groupId.equals(other.groupId);
+        return Objects.equals(this.version, other.version) && this.ga.equals(other.ga);
     }
 
     public String getArtifactId() {
-        return artifactId;
+        return ga.getArtifactId();
     }
 
     public String getGroupId() {
-        return groupId;
+        return ga.getGroupId();
     }
 
     public String getVersion() {
@@ -114,10 +115,23 @@ public class Gav implements Comparable<Gav> {
 
     @Override
     public String toString() {
-        return groupId + ":" + artifactId + ":" + version;
+        return toString(new StringBuilder()).toString();
+    }
+
+    public StringBuilder toString(StringBuilder sb) {
+        ga.toString(sb).append(':');
+        if (version != null) {
+            sb.append(version);
+        }
+        return sb;
     }
 
     public Ga toGa() {
-        return new Ga(groupId, artifactId);
+        return ga;
     }
+
+    public Gavtc toGavtc(String type, String classifier) {
+        return new Gavtc(this, type, classifier);
+    }
+
 }

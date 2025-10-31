@@ -16,6 +16,7 @@
  */
 package org.l2x6.pom.tuner.model;
 
+import java.util.Objects;
 import java.util.StringTokenizer;
 
 /**
@@ -39,14 +40,19 @@ public class Ga implements Comparable<Ga> {
     public static Ga of(String gavString) {
         StringTokenizer st = new StringTokenizer(gavString, ":");
         if (!st.hasMoreTokens()) {
-            throw new IllegalStateException(String.format("Cannot parse [%s] to a " + Ga.class.getName(), gavString));
+            throw new IllegalStateException("Cannot parse '" + gavString + " to a " + Ga.class.getName()
+                    + "; expected '<groupId>:<artifactId>', found too little segments");
         } else {
             final String g = st.nextToken();
             if (!st.hasMoreTokens()) {
-                throw new IllegalStateException(
-                        String.format("Cannot parse [%s] to a " + Ga.class.getName(), gavString));
+                throw new IllegalStateException("Cannot parse '" + gavString + " to a " + Ga.class.getName()
+                        + "; expected '<groupId>:<artifactId>', found too little segments");
             } else {
                 final String a = st.nextToken();
+                if (st.hasMoreTokens()) {
+                    throw new IllegalStateException("Cannot parse '" + gavString + " to a " + Ga.class.getName()
+                            + "; expected '<groupId>:<artifactId>', found too many segments");
+                }
                 return new Ga(g, a);
             }
         }
@@ -61,8 +67,8 @@ public class Ga implements Comparable<Ga> {
 
     public Ga(String groupId, String artifactId) {
         super();
-        this.groupId = groupId;
-        this.artifactId = artifactId;
+        this.groupId = Objects.requireNonNull(groupId, "groupId");
+        this.artifactId = Objects.requireNonNull(artifactId, "artifactId");
         this.hashCode = 31 * (31 + artifactId.hashCode()) + groupId.hashCode();
     }
 
@@ -101,6 +107,10 @@ public class Ga implements Comparable<Ga> {
         return hashCode;
     }
 
+    public StringBuilder toString(StringBuilder sb) {
+        return sb.append(groupId).append(':').append(artifactId);
+    }
+
     @Override
     public String toString() {
         return groupId + ":" + artifactId;
@@ -108,5 +118,9 @@ public class Ga implements Comparable<Ga> {
 
     public static Ga excludeAll() {
         return EXCELUDE_ALL;
+    }
+
+    public Gav toGav(String version) {
+        return new Gav(this, version);
     }
 }
