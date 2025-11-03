@@ -125,17 +125,17 @@ public class Ga implements Comparable<Ga> {
     /**
      * Append {@code <groupId>:<artifactId>} to the given {@link StringBuilder} and return it.
      *
-     * @param stringBuilder the {@link StringBuilder} to append to
-     * @return the passed-in {@link StringBuilder}
+     * @param  stringBuilder the {@link StringBuilder} to append to
+     * @return               the passed-in {@link StringBuilder}
      *
-     * @since 4.8.0
+     * @since                4.8.0
      */
     public StringBuilder toString(StringBuilder stringBuilder) {
         return stringBuilder.append(groupId).append(':').append(artifactId);
     }
 
     /**
-     * @return {@link #EXCELUDE_ALL}
+     * @return     {@link #EXCELUDE_ALL}
      * @deprecated use {@link GavPattern}
      */
     @Deprecated
@@ -144,10 +144,11 @@ public class Ga implements Comparable<Ga> {
     }
 
     /**
-     * @param version the version of this {@link Gav} or {@code null} if the version is unknown; an empty string is transformed to {@code null}
-     * @return new {@link Gav} embedding this {@link Ga} and having the given {@code version}.
+     * @param  version the version of this {@link Gav} or {@code null} if the version is unknown; an empty string is
+     *                 transformed to {@code null}
+     * @return         new {@link Gav} embedding this {@link Ga} and having the given {@code version}.
      *
-     * @since 4.8.0
+     * @since          4.8.0
      */
     public Gav toGav(String version) {
         return new Gav(this, version);

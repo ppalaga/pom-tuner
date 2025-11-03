@@ -23,7 +23,8 @@ import java.util.StringTokenizer;
  * An immutable {@link #groupId}, {@link #artifactId}, {@link #version} triple with a fast {@link #hashCode()} and
  * {@link #equals(Object)}.
  * <p>
- * It is possible to create a {@link Gav} instances with {@code null} version using {@link Gav#Gav(String, String, String)} or #{@link Gav#Gav(Ga, String)}.
+ * It is possible to create a {@link Gav} instances with {@code null} version using
+ * {@link Gav#Gav(String, String, String)} or #{@link Gav#Gav(Ga, String)}.
  * This might be useful to represent dependencies in a {@code pom.xml} whose versions are managed.
  *
  * @author <a href="https://github.com/ppalaga">Peter Palaga</a>
@@ -32,10 +33,11 @@ public class Gav implements Comparable<Gav> {
 
     /**
      * Parse the given {@code <groupId>:<artifactId>:<version>} {@code gavString} and return a new {@link Gavtc} instance.
-     * While it is possible to create a {@link Gav} instance with {@code null} version, this method requires a non empty {@code version}.
+     * While it is possible to create a {@link Gav} instance with {@code null} version, this method requires a non empty
+     * {@code version}.
      *
-     * @param gavString the string to parse
-     * @return           a new {@link Gav} instance parsed out of the given {@code gavString}
+     * @param  gavString             the string to parse
+     * @return                       a new {@link Gav} instance parsed out of the given {@code gavString}
      * @throws IllegalStateException on any parse errors
      */
     public static Gav of(String gavString) {
@@ -70,10 +72,11 @@ public class Gav implements Comparable<Gav> {
     private final String version;
 
     /**
-     * @param ga the Ga instance to embed
-     * @param version the version of this {@link Gav} or {@code null} if the version is unknown; an empty string is transformed to {@code null}
+     * @param ga      the Ga instance to embed
+     * @param version the version of this {@link Gav} or {@code null} if the version is unknown; an empty string is
+     *                transformed to {@code null}
      *
-     * @since 4.8.0
+     * @since         4.8.0
      */
     public Gav(Ga ga, String version) {
         this.ga = ga;
@@ -82,9 +85,10 @@ public class Gav implements Comparable<Gav> {
     }
 
     /**
-     * @param groupId the {@code groupId} (required)
+     * @param groupId    the {@code groupId} (required)
      * @param artifactId the {@code artifactId} (required)
-     * @param version the version of this {@link Gav} or {@code null} if the version is unknown; an empty string is transformed to {@code null}
+     * @param version    the version of this {@link Gav} or {@code null} if the version is unknown; an empty string is
+     *                   transformed to {@code null}
      */
     public Gav(String groupId, String artifactId, String version) {
         this(new Ga(groupId, artifactId), version);
@@ -146,8 +150,8 @@ public class Gav implements Comparable<Gav> {
     /**
      * Append {@code <groupId>:<artifactId>:<version>} to the given {@link StringBuilder} and return it.
      *
-     * @param stringBuilder the {@link StringBuilder} to append to
-     * @return the passed-in {@link StringBuilder}
+     * @param  stringBuilder the {@link StringBuilder} to append to
+     * @return               the passed-in {@link StringBuilder}
      */
     public StringBuilder toString(StringBuilder stringBuilder) {
         ga.toString(stringBuilder).append(':');
@@ -167,11 +171,12 @@ public class Gav implements Comparable<Gav> {
     }
 
     /**
-     * @param type
-     * @param classifier
-     * @return new {@link Gavtc} embedding this {@link Gav} and having the given {@code type} and {@code classifier}.
+     * @param  type
+     * @param  classifier
+     * @return            new {@link Gavtc} embedding this {@link Gav} and having the given {@code type} and
+     *                    {@code classifier}.
      *
-     * @since 4.8.0
+     * @since             4.8.0
      */
     public Gavtc toGavtc(String type, String classifier) {
         return new Gavtc(this, type, classifier);
